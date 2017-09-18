@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <title>DracoEncoder test</title>
+    <style>
+    body {
+        font-family: Monospace;
+        background-color: #000;
+        color: #fff;
+        margin: 0px;
+        overflow: hidden;
+    }
+    </style>
+</head>
+
+<body>
+    <div id="page-wrapper">
+        <h1>Open a draco compressed file (.drc):</h1>
+        <div>
+            <button id="switchDecoder" onclick="switchDecoder()">Switch Decoder</button>
+            <input type="file" id="fileInput">
+        </div>
+    </div>
+    <div>
+        <pre id="decoderType"><pre>
+    </div>
+    <div>
+        <pre id="fileDisplayArea"><pre>
+    </div>
+    <script type="text/javascript" src="js/three.min.js"></script>
+    <script type="text/javascript" src="js/DDSLoader.js"></script>
+    <script type="text/javascript" src="js/MTLLoader.js"></script>
+    <script type="text/javascript" src="js/OBJLoader.js"></script>
+    <script type="text/javascript" src="js/FileSaver.js"></script>
+    <script type="text/javascript" src="js/OrbitControls.js"></script>
+    <script type="text/javascript" src="js/draco_encoder.js"></script>
+    <script type="text/javascript" src="js/draco_decoder.js"></script>
+    <script type="text/javascript" src="js/DRACOLoader.js"></script>
+    <script type="text/javascript" src="js/geometry_helper.js"></script>
+    <script>
+      'use strict';
+
+      // Global Draco decoder type.
+      var dracoLoader;
+      var dracoDecoderType = {};
+
+      createDracoDecoder();
+
+      function createDracoDecoder() {
+        dracoDecoderType.type = "js";
+        dracoLoader = new THREE.DRACOLoader(undefined, dracoDecoderType);
+      }
+
+      function switchDecoder() {
+        var showDecoder = document.getElementById('decoderType');
+        if (dracoDecoderType.type === "wasm") {
+          dracoDecoderType.type = "js";
+          showDecoder.innerText = "Now using Javascript Decoder.";
+        } else {
+          dracoDecoderType.type = "wasm";
+          showDecoder.innerText = "Now using WebAssembly Decoder.";
+        }
+        dracoLoader = new THREE.DRACOLoader(undefined, dracoDecoderType);
+      }
+
+      var camera, cameraTarget, scene, renderer;
+
+      function init() {
+        var container = document.createElement('div');
+        document.body.appendChild(container);
+
+        camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 1, 15);
+        camera.position.set(3, 0.15, 3);
+        cameraTarget = new THREE.Vector3(0, 0, 0);
+
+        scene = new THREE.Scene();
+        scene.fog = new THREE.Fog(0x72645b, 2, 15);
+
+        // Ground
+        var plane = new THREE.Mesh(
+            new THREE.PlaneBufferGeometry(40, 40),
+            new THREE.MeshPhongMaterial({color: 0x999999, specular: 0x101010}));
+        plane.rotation.x = -Math.PI/2;
+        plane.position.y = -0.5;
+        scene.add(plane);
+        plane.receiveShadow = true;
+
+        // Lights
+        scene.add(new THREE.HemisphereLight(0x443333, 0x111122));
+        addShadowedLight(1, 1, 1, 0xffffff, 1.35);
+        addShadowedLight(0.5, 1, -1, 0xffaa00, 1);
+
+        // renderer
+        renderer = new THREE.WebGLRenderer({antialias: true});
+        renderer.setClearColor(scene.fog.color);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        container.appendChild(renderer.domElement);
+        var controls = new THREE.OrbitControls(camera);
+        window.addEventListener('resize', onWindowResize, false);
+      }
+
+      function addShadowedLight(x, y, z, color, intensity) {
+        var directionalLight = new THREE.DirectionalLight(color, intensity);
+        directionalLight.position.set(x, y, z);
+        scene.add(directionalLight);
+      }
+
+      function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      }
+
+      function animate() {
+        requestAnimationFrame(animate);
+        render();
+      }
+
+      function render() {
+        renderer.render(scene, camera);
+      }
+
+      window.onload = function() {
+        var fileInput = document.getElementById('fileInput');
+        var fileDisplayArea = document.getElementById('fileDisplayArea');
+
+        fileInput.onclick = function() {
+          this.value = '';
+        }
+        var num = 0;
+        var object = new THREE.Object3D();
+        var scale = 1;
+        fileInput.addEventListener('change', function(e) {
+          num ++;
+          var file = this.files[0];
+          var name = this.files[0].name;
+          var objName = name.split(".")[1];
+          var reader = new FileReader();
+          reader.onload = function(e) {
+            // Enable logging to console output.
+            dracoLoader.setVerbosity(1);
+
+            // To use triangle strips use:
+            //   dracoLoader.setDrawMode(THREE.TriangleStripDrawMode);
+            dracoLoader.setDrawMode(THREE.TrianglesDrawMode);
+
+            // Skip dequantization of the position attribute. It will be done on the GPU.
+            // dracoLoader.setSkipDequantization('position', true);
+            dracoLoader.decodeDracoFile(reader.result, function(bufferGeometry) {
+              console.log(bufferGeometry);
+              if (dracoLoader.decode_time !== undefined) {
+                fileDisplayArea.innerText = 'Decode time = ' + dracoLoader.decode_time + '\n' +
+                                            'Import time = ' + dracoLoader.import_time;
+              }
+              var material = new THREE.MeshStandardMaterial({vertexColors: THREE.VertexColors});
+              
+              // If the position attribute is quantized, modify the material to perform
+              // dequantization on the GPU.
+              if (bufferGeometry.attributes['position'].isQuantized) {
+                // setDequantizationForMaterial(material, bufferGeometry);
+              }
+
+              var mesh;
+              // Point cloud does not have face indices.
+              var mtlLoader = new THREE.MTLLoader();
+              mtlLoader.setPath( 'models/' );
+              mtlLoader.load( 'ztzh.mtl', function( materials ) {
+                  materials.preload();
+                  if (bufferGeometry.index == null) {
+                    mesh = new THREE.Points(bufferGeometry, materials.materials[objName]);
+                  } else {
+                    if (bufferGeometry.attributes.normal === undefined) {
+                      var geometryHelper = new GeometryHelper();
+                      geometryHelper.computeVertexNormals(bufferGeometry);
+                    }
+                    mesh = new THREE.Mesh(bufferGeometry, materials.materials[objName]);
+                    mesh.drawMode = dracoLoader.drawMode;
+                  }
+                  // Compute range of the mesh coordinates for proper rendering.
+                  if (num === 1) {
+                    bufferGeometry.computeBoundingBox();
+                    if (bufferGeometry.attributes['position'].isQuantized) {
+                      // If the mesh is quantized, transform the bounding box to the dequantized
+                      // coordinates.
+                      var posAttribute = bufferGeometry.attributes['position'];
+                      var normConstant =
+                          posAttribute.maxRange / (1 << posAttribute.numQuantizationBits);
+                      var minPos = posAttribute.minValues;
+                      bufferGeometry.boundingBox.max.x = minPos[0] + bufferGeometry.boundingBox.max.x * normConstant;
+                      bufferGeometry.boundingBox.max.y = minPos[1] + bufferGeometry.boundingBox.max.y * normConstant;
+                      bufferGeometry.boundingBox.max.z = minPos[2] + bufferGeometry.boundingBox.max.z * normConstant;
+                      bufferGeometry.boundingBox.min.x = minPos[0] + bufferGeometry.boundingBox.min.x * normConstant;
+                      bufferGeometry.boundingBox.min.y = minPos[1] + bufferGeometry.boundingBox.min.y * normConstant;
+                      bufferGeometry.boundingBox.min.z = minPos[2] + bufferGeometry.boundingBox.min.z * normConstant;
+                    }
+                    var sizeX = bufferGeometry.boundingBox.max.x - bufferGeometry.boundingBox.min.x;
+                    var sizeY = bufferGeometry.boundingBox.max.y - bufferGeometry.boundingBox.min.y;
+                    var sizeZ = bufferGeometry.boundingBox.max.z - bufferGeometry.boundingBox.min.z;
+                    var diagonalSize = Math.sqrt(sizeX * sizeX + sizeY * sizeY + sizeZ * sizeZ);
+                    scale = 1.0 / diagonalSize;
+                    var midX = (bufferGeometry.boundingBox.min.x + bufferGeometry.boundingBox.max.x) / 2;
+                    var midY = (bufferGeometry.boundingBox.min.y + bufferGeometry.boundingBox.max.y) / 2;
+                    var midZ = (bufferGeometry.boundingBox.min.z + bufferGeometry.boundingBox.max.z) / 2;
+                  }
+                  // mesh.scale.multiplyScalar(scale);
+                  // mesh.position.x = -midX * scale;
+                  // mesh.position.y = -midY * scale;
+                  // mesh.position.z = -midZ * scale;
+                  mesh.castShadow = true;
+                  mesh.receiveShadow = true;
+
+                  var selectedObject = scene.getObjectByName("my_mesh");
+                  scene.remove(selectedObject);
+                  var drcLength = 0;
+                  for (var prop in materials.materials) {
+                      drcLength ++;
+                  }
+                  if (num < drcLength) {
+                    object.add(mesh);
+                  }else{
+                    object.add(mesh);
+                    object.scale.multiplyScalar(scale);
+                    scene.add(object);
+                  }
+                  object.name = "my_mesh";
+              });
+            });
+          }
+          reader.readAsArrayBuffer(file);
+        });
+
+        init();
+        animate();
+      }
+
+      function setDequantizationForMaterial(material, bufferGeometry) {
+        material.onBeforeCompile = function(shader) {
+          // Add uniform variables needed for dequantization.
+          var posAttribute = bufferGeometry.attributes['position'];
+          shader.uniforms.normConstant =
+            { value: posAttribute.maxRange / (1 << posAttribute.numQuantizationBits) };
+          shader.uniforms.minPos = { value: posAttribute.minValues };
+
+          shader.vertexShader = 'uniform float maxRange;\n' +
+                                'uniform float normConstant;\n' +
+                                'uniform vec3 minPos;\n' +
+                                shader.vertexShader;
+          shader.vertexShader = shader.vertexShader.replace(
+              '#include <begin_vertex>',
+              'vec3 transformed = minPos + position * normConstant;'
+          );
+        }
+      }
+    </script>
+</body>
+</html>
